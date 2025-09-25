@@ -101,6 +101,7 @@ public:
     // return the distance in meters in North/East/Down plane as a N/E/D vector to loc2
     // NOT CONSIDERING ALT FRAME!
     Vector3f get_distance_NED(const Location &loc2) const;
+    Vector3p get_distance_NED_postype(const Location &loc2) const;
     Vector3d get_distance_NED_double(const Location &loc2) const;
 
     // return the distance in meters in North/East/Down plane as a N/E/D vector to loc2 considering alt frame, if altitude cannot be resolved down distance is 0
@@ -108,6 +109,7 @@ public:
 
     // return the distance in meters in North/East plane as a N/E vector to loc2
     Vector2f get_distance_NE(const Location &loc2) const;
+    Vector2p get_distance_NE_postype(const Location &loc2) const;
     Vector2d get_distance_NE_double(const Location &loc2) const;
     Vector2F get_distance_NE_ftype(const Location &loc2) const;
 
@@ -117,6 +119,12 @@ public:
     // extrapolate latitude/longitude given distances (in meters) north
     // and east. Note that this is metres, *even for the altitude*.
     void offset(const Vector3p &ofs_ned);
+    void offset_up_cm(int32_t alt_offset_cm) {
+        alt += alt_offset_cm;
+    }
+    void offset_up_m(float alt_offset_m) {
+        alt += alt_offset_m * 100;
+    }
 
     // extrapolate latitude/longitude given bearing and distance
     void offset_bearing(ftype bearing_deg, ftype distance);
@@ -139,7 +147,7 @@ public:
 
     // return bearing in centi-degrees from location to loc2, return is 0 to 35999
     int32_t get_bearing_to(const Location &loc2) const {
-        return int32_t(get_bearing(loc2) * DEGX100 + 0.5);
+        return int32_t(rad_to_cd(get_bearing(loc2)) + 0.5);
     }
 
     // check if lat and lng match. Ignore altitude and options
@@ -182,6 +190,10 @@ public:
     void linearly_interpolate_alt(const Location &point1, const Location &point2);
 
     bool initialised() const { return (lat !=0 || lng != 0 || alt != 0); }
+    // return true if alt is *exactly* zero.  This is not intended to
+    // be used for anything except magically changing a 0-altitude
+    // passed via mavlink into the current vehicle's altitude
+    bool alt_is_zero() const { return alt == 0; }
 
     // wrap longitude at -180e7 to 180e7
     static int32_t wrap_longitude(int64_t lon);

@@ -1,5 +1,7 @@
 # encoding: utf-8
 
+# flake8: noqa
+
 """
 Waf tool for ChibiOS build
 """
@@ -15,6 +17,8 @@ import pickle
 import struct
 import base64
 import subprocess
+
+import hal_common
 
 _dynamic_env_data = {}
 def _load_dynamic_env_data(bld):
@@ -432,7 +436,10 @@ def chibios_firmware(self):
     cleanup_task = self.create_task('build_normalized_bins', src=bin_target)
     cleanup_task.set_run_after(generate_apj_task)
 
-    bootloader_bin = self.bld.srcnode.make_node("Tools/bootloaders/%s_bl.bin" % self.env.BOARD)
+    bootloader_board = self.env.BOARD
+    if self.bld.env.USE_BOOTLOADER_FROM_BOARD:
+        bootloader_board = self.bld.env.USE_BOOTLOADER_FROM_BOARD
+    bootloader_bin = self.bld.srcnode.make_node("Tools/bootloaders/%s_bl.bin" % bootloader_board)
     if self.bld.env.HAVE_INTEL_HEX:
         if os.path.exists(bootloader_bin.abspath()):
             if int(self.bld.env.FLASH_RESERVE_START_KB) > 0:
@@ -502,34 +509,19 @@ def setup_canperiph_build(cfg):
         ]
 
     cfg.get_board().with_can = True
-    
+
+def load_env_vars_handle_kv_pair(env, kv_pair):
+    '''handle a key/value pair out of the pickled environment dictionary'''
+    (k, v) = kv_pair
+    if k == 'ROMFS_FILES':
+        env.ROMFS_FILES += v
+        return
+    hal_common.load_env_vars_handle_kv_pair(env, kv_pair)
+
 def load_env_vars(env):
     '''optionally load extra environment variables from env.py in the build directory'''
-    print("Checking for env.py")
-    env_py = os.path.join(env.BUILDROOT, 'env.py')
-    if not os.path.exists(env_py):
-        print("No env.py found")
-        return
-    e = pickle.load(open(env_py, 'rb'))
-    for k in e.keys():
-        v = e[k]
-        if k == 'ROMFS_FILES':
-            env.ROMFS_FILES += v
-            continue
-        if k in env:
-            if isinstance(env[k], dict):
-                a = v.split('=')
-                env[k][a[0]] = '='.join(a[1:])
-                print("env updated %s=%s" % (k, v))
-            elif isinstance(env[k], list):
-                env[k].append(v)
-                print("env appended %s=%s" % (k, v))
-            else:
-                env[k] = v
-                print("env added %s=%s" % (k, v))
-        else:
-            env[k] = v
-            print("env set %s=%s" % (k, v))
+    hal_common.load_env_vars(env, kv_handler=load_env_vars_handle_kv_pair)
+
     if env.DEBUG or env.DEBUG_SYMBOLS:
         env.CHIBIOS_BUILD_FLAGS += ' ENABLE_DEBUG_SYMBOLS=yes'
     if env.ENABLE_ASSERTS:
@@ -670,6 +662,8 @@ def pre_build(bld):
 
 def build(bld):
 
+    # make ccache effective on ChibiOS builds
+    os.environ['CCACHE_IGNOREOPTIONS'] = '--specs=nano.specs --specs=nosys.specs'
 
     hwdef_rule="%s '%s/hwdef/scripts/chibios_hwdef.py' -D '%s' --params '%s' '%s'" % (
             bld.env.get_flat('PYTHON'),
@@ -754,7 +748,7 @@ def build(bld):
 
     # list of functions that we will give a link error for if they are
     # used. This is to prevent accidental use of these functions
-    blacklist = ['_sbrk', '_sbrk_r', '_malloc_r', '_calloc_r', '_free_r', 'ftell',
+    blacklist = ['_sbrk', '_sbrk_r', '_malloc_r', '_calloc_r', '_free_r', 'ftell', 'realloc',
                  'fopen', 'fflush', 'fwrite', 'fread', 'fputs', 'fgets',
                  'clearerr', 'fseek', 'ferror', 'fclose', 'tmpfile', 'getc', 'ungetc', 'feof',
                 'ftell', 'freopen', 'remove', 'vfprintf', 'vfprintf_r', 'fscanf',

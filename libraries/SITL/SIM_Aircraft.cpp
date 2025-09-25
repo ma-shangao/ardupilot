@@ -219,7 +219,7 @@ void Aircraft::update_mag_field_bf()
     // create a field vector and rotate to the required orientation
     Vector3f mag_ef(1e3f * intensity, 0.0f, 0.0f);
     Matrix3f R;
-    R.from_euler(0.0f, -ToRad(inclination), ToRad(declination));
+    R.from_euler(0.0f, -radians(inclination), radians(declination));
     mag_ef = R * mag_ef;
 
     // calculate frame height above ground
@@ -1063,7 +1063,9 @@ bool Aircraft::Clamp::clamped(Aircraft &aircraft, const struct sitl_input &input
     }
     const uint16_t servo_pos = input.servos[clamp_idx];
     bool new_clamped = currently_clamped;
-    if (servo_pos < 1200) {
+    if (servo_pos == 0) {
+        // invalid value, do nothing
+    } else if (servo_pos < 1200) {
         if (currently_clamped) {
             GCS_SEND_TEXT(MAV_SEVERITY_INFO, "SITL: Clamp: released vehicle");
             new_clamped = false;

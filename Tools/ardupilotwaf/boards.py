@@ -1,13 +1,16 @@
 # encoding: utf-8
 
+# flake8: noqa
+
 from collections import OrderedDict
 import re
 import sys, os
 import fnmatch
 import platform
+import glob
 
 import waflib
-from waflib import Utils
+from waflib import Utils, Context
 from waflib.Configure import conf
 import json
 _board_classes = {}
@@ -80,23 +83,45 @@ class Board:
                 AP_SCRIPTING_ENABLED = 0,
             )
 
+        # embed any scripts from ROMFS/scripts
+        if os.path.exists('ROMFS/scripts'):
+            for f in os.listdir('ROMFS/scripts'):
+                if fnmatch.fnmatch(f, "*.lua"):
+                    env.ROMFS_FILES += [('scripts/'+f,'ROMFS/scripts/'+f)]
+
         # allow GCS disable for AP_DAL example
         if cfg.options.no_gcs:
             env.CXXFLAGS += ['-DHAL_GCS_ENABLED=0']
 
-        # configurations for XRCE-DDS
-        if cfg.options.enable_dds:
-            cfg.recurse('libraries/AP_DDS')
-            env.ENABLE_DDS = True
-            env.AP_LIBRARIES += [
-                'AP_DDS'
-            ]
-            env.DEFINES.update(AP_DDS_ENABLED = 1)
-            # check for microxrceddsgen
-            cfg.find_program('microxrceddsgen',mandatory=True)
+        # Setup DDS
+        if env.BOARD_CLASS == "ChibiOS" or env.BOARD_CLASS == "Linux":
+            # need to check the hwdef.h file for the board to see if dds is enabled
+            # the issue here is that we need to configure the env properly to include
+            # the DDS library, but the definition is the the hwdef file
+            # and can be overridden by the commandline options
+            with open(env.BUILDROOT + "/hwdef.h", 'r', encoding="utf8") as file:
+                if "#define AP_DDS_ENABLED 1" in file.read():
+                    # Enable DDS if the hwdef file has it enabled
+                    cfg.env.OPTIONS['enable_DDS'] = True
+                elif cfg.env.OPTIONS.get('enable_DDS', False):
+                    # Add the define enabled if the hwdef file does not have it and the commandline option is set
+                    env.DEFINES.update(
+                        AP_DDS_ENABLED=1,
+                    )
+                else:
+                    # Add the define disabled if the hwdef file does not have it and the commandline option is not set
+                    env.DEFINES.update(
+                        AP_DDS_ENABLED=0,
+                    )
         else:
-            env.ENABLE_DDS = False
-            env.DEFINES.update(AP_DDS_ENABLED = 0)
+            if cfg.options.enable_DDS:
+                env.DEFINES.update(
+                    AP_DDS_ENABLED=1,
+                )
+            else:
+                env.DEFINES.update(
+                    AP_DDS_ENABLED=0,
+                )
 
         # setup for supporting onvif cam control
         if cfg.options.enable_onvif:
@@ -166,12 +191,25 @@ class Board:
         for opt in build_options.BUILD_OPTIONS:
             enable_option = opt.config_option().replace("-","_")
             disable_option = "disable_" + enable_option[len("enable-"):]
-            if getattr(cfg.options, enable_option, False):
+            lower_disable_option = disable_option.lower().replace("_", "-")
+            lower_enable_option = enable_option.lower().replace("_", "-")
+            if getattr(cfg.options, enable_option, False) or getattr(cfg.options, lower_enable_option, False):
                 env.CXXFLAGS += ['-D%s=1' % opt.define]
                 cfg.msg("Enabled %s" % opt.label, 'yes', color='GREEN')
-            elif getattr(cfg.options, disable_option, False):
+            elif getattr(cfg.options, disable_option, False) or getattr(cfg.options, lower_disable_option, False):
                 env.CXXFLAGS += ['-D%s=0' % opt.define]
                 cfg.msg("Enabled %s" % opt.label, 'no', color='YELLOW')
+
+        # support embedding lua drivers and applets
+        driver_list = glob.glob(os.path.join(Context.run_dir, "libraries/AP_Scripting/drivers/*.lua"))
+        applet_list = glob.glob(os.path.join(Context.run_dir, "libraries/AP_Scripting/applets/*.lua"))
+        for d in driver_list + applet_list:
+            bname = os.path.basename(d)
+            embed_name = bname[:-4]
+            embed_option = f"embed-{embed_name}".replace("-","_")
+            if getattr(cfg.options, embed_option, False):
+                env.ROMFS_FILES += [(f'scripts/{bname}', d)]
+                cfg.msg(f"Embedded {bname}", 'yes', color='GREEN')
 
         if cfg.options.disable_networking:
             env.CXXFLAGS += ['-DAP_NETWORKING_ENABLED=0']
@@ -277,7 +315,13 @@ class Board:
             want_version = cfg.options.assert_cc_version
             if have_version != want_version:
                 cfg.fatal("cc version mismatch: %s should be %s" % (have_version, want_version))
-        
+
+        # ensure that if you are using clang you're using it for both
+        # C and C++!
+        if (("clang" in cfg.env.COMPILER_CC and "clang" not in cfg.env.COMPILER_CXX) or
+            ("clang" not in cfg.env.COMPILER_CC and "clang" in cfg.env.COMPILER_CXX)):
+            cfg.fatal("Compiler mismatch; set CC and CXX to matching compilers (eg. CXX=clang++-19 CC=clang-19")
+
         if 'clang' in cfg.env.COMPILER_CC:
             env.CFLAGS += [
                 '-fcolor-diagnostics',
@@ -293,14 +337,6 @@ class Board:
             env.CFLAGS += [
                 '-Wno-format-contains-nul',
                 '-fsingle-precision-constant', # force const vals to be float , not double. so 100.0 means 100.0f
-            ]
-            if self.cc_version_gte(cfg, 7, 4):
-                env.CXXFLAGS += [
-                    '-Werror=implicit-fallthrough',
-                ]
-            env.CXXFLAGS += [
-                '-fsingle-precision-constant',
-                '-Wno-psabi',
             ]
 
         if cfg.env.DEBUG:
@@ -335,14 +371,6 @@ class Board:
         if cfg.options.bootloader:
             # don't let bootloaders try and pull scripting in
             cfg.options.disable_scripting = True
-            if cfg.options.signed_fw:
-                env.DEFINES.update(
-                    ENABLE_HEAP = 1,
-                )
-        else:
-            env.DEFINES.update(
-                ENABLE_HEAP = 1,
-            )
 
         if cfg.options.enable_math_check_indexes:
             env.CXXFLAGS += ['-DMATH_CHECK_INDEXES']
@@ -428,7 +456,9 @@ class Board:
         else:
             env.CXXFLAGS += [
                 '-Wno-format-contains-nul',
-                '-Werror=unused-but-set-variable'
+                '-Werror=unused-but-set-variable',
+                '-fsingle-precision-constant',
+                '-Wno-psabi',
             ]
             if self.cc_version_gte(cfg, 5, 2):
                 env.CXXFLAGS += [
@@ -528,7 +558,10 @@ class Board:
         if cfg.options.consistent_builds:
             # if symbols are renamed we don't want them to affect the output:
             env.CXXFLAGS += ['-fno-rtti']
-            env.CFLAGS += ['-fno-rtti']
+            # avoid different filenames for the same source file
+            # affecting the compiler output:
+            env.CXXFLAGS += ['-frandom-seed=4']  # ob. xkcd
+
             # stop including a unique ID in the headers.  More useful
             # when trying to find binary differences as the build-id
             # appears to be a hash of the output products
@@ -562,7 +595,9 @@ class Board:
             self.embed_ROMFS_files(bld)
 
     def build(self, bld):
+        git_hash_ext = bld.git_head_hash(short=True, hash_abbrev=16)
         bld.ap_version_append_str('GIT_VERSION', bld.git_head_hash(short=True))
+        bld.ap_version_append_str('GIT_VERSION_EXTENDED', git_hash_ext)
         bld.ap_version_append_int('GIT_VERSION_INT', int("0x" + bld.git_head_hash(short=True), base=16))
         bld.ap_version_append_str('AP_BUILD_ROOT', bld.srcnode.abspath())
         import time
@@ -604,7 +639,8 @@ def add_dynamic_boards_from_hwdef_dir(base_type, hwdef_dir):
         if d in _board_classes.keys():
             continue
         hwdef = os.path.join(dirname, d, 'hwdef.dat')
-        if os.path.exists(hwdef):
+        hwdef_bl = os.path.join(dirname, d, 'hwdef-bl.dat')
+        if os.path.exists(hwdef) or os.path.exists(hwdef_bl):
             newclass = type(d, (base_type,), {'name': d})
 
 def add_dynamic_boards_esp32():
@@ -797,8 +833,7 @@ class sitl(Board):
 
         # wrap malloc to ensure memory is zeroed
         if cfg.env.DEST_OS == 'cygwin':
-            # on cygwin we need to wrap _malloc_r instead
-            env.LINKFLAGS += ['-Wl,--wrap,_malloc_r']
+            pass # handled at runtime in libraries/AP_Common/c++.cpp
         elif platform.system() != 'Darwin':
             env.LINKFLAGS += ['-Wl,--wrap,malloc']
         
@@ -823,12 +858,6 @@ class sitl(Board):
 
         # include locations.txt so SITL on windows can lookup by name
         env.ROMFS_FILES += [('locations.txt','Tools/autotest/locations.txt')]
-
-        # embed any scripts from ROMFS/scripts
-        if os.path.exists('ROMFS/scripts'):
-            for f in os.listdir('ROMFS/scripts'):
-                if fnmatch.fnmatch(f, "*.lua"):
-                    env.ROMFS_FILES += [('scripts/'+f,'ROMFS/scripts/'+f)]
 
         if cfg.options.sitl_rgbled:
             env.CXXFLAGS += ['-DWITH_SITL_RGBLED']
@@ -917,7 +946,7 @@ class sitl_periph(sitl):
             AP_AHRS_ENABLED = 1,
             AP_AHRS_BACKEND_DEFAULT_ENABLED = 0,
             AP_AHRS_DCM_ENABLED = 1,  # need a default backend
-            HAL_EXTERNAL_AHRS_ENABLED = 0,
+            AP_EXTERNAL_AHRS_ENABLED = 0,
 
             HAL_MAVLINK_BINDINGS_ENABLED = 1,
 
@@ -955,6 +984,7 @@ class sitl_periph(sitl):
             AP_PERIPH_IMU_ENABLED = 0,
             AP_PERIPH_MAG_ENABLED = 0,
             AP_PERIPH_BATTERY_BALANCE_ENABLED = 0,
+            AP_PERIPH_BATTERY_TAG_ENABLED = 0,
             AP_PERIPH_MSP_ENABLED = 0,
             AP_PERIPH_BARO_ENABLED = 0,
             AP_PERIPH_EFI_ENABLED = 0,
@@ -975,6 +1005,7 @@ class sitl_periph(sitl):
             AP_PERIPH_TOSHIBA_LED_WITHOUT_NOTIFY_ENABLED = 0,
             AP_PERIPH_BUZZER_ENABLED = 0,
             AP_PERIPH_BUZZER_WITHOUT_NOTIFY_ENABLED = 0,
+            AP_PERIPH_RTC_GLOBALTIME_ENABLED = 0,
         )
 
         try:
@@ -1039,9 +1070,49 @@ class sitl_periph_battmon(sitl_periph):
             AP_PERIPH_BATTERY_ENABLED = 1,
         )
 
+class sitl_periph_battery_tag(sitl_periph):
+    def configure_env(self, cfg, env):
+        cfg.env.AP_PERIPH = 1
+        super(sitl_periph_battery_tag, self).configure_env(cfg, env)
+        env.DEFINES.update(
+            HAL_BUILD_AP_PERIPH = 1,
+            PERIPH_FW = 1,
+            CAN_APP_NODE_NAME = '"org.ardupilot.battery_tag"',
+            APJ_BOARD_ID = 101,
+
+            AP_SIM_PARAM_ENABLED = 0,
+            AP_KDECAN_ENABLED = 0,
+            AP_TEMPERATURE_SENSOR_ENABLED = 0,
+            AP_PERIPH_BATTERY_TAG_ENABLED = 1,
+            AP_RTC_ENABLED = 1,
+            AP_PERIPH_RTC_ENABLED = 1,
+            AP_PERIPH_RTC_GLOBALTIME_ENABLED = 1,
+        )
+
+class sitl_periph_can_to_serial(sitl_periph):
+    def configure_env(self, cfg, env):
+        cfg.env.AP_PERIPH = 1
+        super().configure_env(cfg, env)
+        env.DEFINES.update(
+            HAL_BUILD_AP_PERIPH = 1,
+            PERIPH_FW = 1,
+            CAN_APP_NODE_NAME = '"org.ardupilot.serial_passthrough"',
+            APJ_BOARD_ID = 101,
+
+        )
+
 class esp32(Board):
     abstract = True
     toolchain = 'xtensa-esp32-elf'
+
+    def configure(self, cfg):
+        super(esp32, self).configure(cfg)
+        if cfg.env.TOOLCHAIN:
+            self.toolchain = cfg.env.TOOLCHAIN
+        else:
+            # default tool-chain for esp32-based boards:
+            self.toolchain = 'xtensa-esp32-elf'
+
     def configure_env(self, cfg, env):
         env.BOARD_CLASS = "ESP32"
 
@@ -1146,6 +1217,19 @@ class esp32s3(esp32):
     abstract = True
     toolchain = 'xtensa-esp32s3-elf'
 
+    def configure_env(self, cfg, env):
+        if cfg.env.TOOLCHAIN:
+            self.toolchain = cfg.env.TOOLCHAIN
+        else:
+            # default tool-chain for esp32-based boards:
+            self.toolchain = 'xtensa-esp32s3-elf'
+
+        if hasattr(self, 'hwdef'):
+            cfg.env.HWDEF = self.hwdef
+        super(esp32s3, self).configure_env(cfg, env)
+
+        cfg.load('esp32')
+
 class chibios(Board):
     abstract = True
     toolchain = 'arm-none-eabi'
@@ -1162,7 +1246,6 @@ class chibios(Board):
         env.DEFINES.update(
             CONFIG_HAL_BOARD = 'HAL_BOARD_CHIBIOS',
             HAVE_STD_NULLPTR_T = 0,
-            USE_LIBC_REALLOC = 0,
         )
 
         env.AP_LIBRARIES += [
@@ -1605,7 +1688,6 @@ class QURT(Board):
             "--wrap=malloc",
             "--wrap=calloc",
             "--wrap=free",
-            "--wrap=realloc",
             "--wrap=printf",
             "--wrap=strdup",
             "--wrap=__stack_chk_fail",

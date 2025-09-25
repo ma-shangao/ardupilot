@@ -37,18 +37,16 @@ Sub::Sub()
           inertial_nav(ahrs),
           ahrs_view(ahrs, ROTATION_NONE),
           attitude_control(ahrs_view, aparm, motors),
-          pos_control(ahrs_view, inertial_nav, motors, attitude_control),
-          wp_nav(inertial_nav, ahrs_view, pos_control, attitude_control),
-          loiter_nav(inertial_nav, ahrs_view, pos_control, attitude_control),
-          circle_nav(inertial_nav, ahrs_view, pos_control),
+          pos_control(ahrs_view, motors, attitude_control),
+          wp_nav(ahrs_view, pos_control, attitude_control),
+          loiter_nav(ahrs_view, pos_control, attitude_control),
+          circle_nav(ahrs_view, pos_control),
           param_loader(var_info),
           flightmode(&mode_manual),
           auto_mode(Auto_WP),
           guided_mode(Guided_WP)
 {
-#if CONFIG_HAL_BOARD != HAL_BOARD_SITL
     failsafe.pilot_input = true;
-#endif
     if (_singleton != nullptr) {
         AP_HAL::panic("Can only be one Sub");
     }
@@ -142,9 +140,6 @@ const AP_Scheduler::Task Sub::scheduler_tasks[] = {
 #if HAL_LOGGING_ENABLED
     SCHED_TASK_CLASS(AP_Scheduler,        &sub.scheduler,    update_logging,     0.1,  75,  63),
 #endif
-#if AP_RPM_ENABLED
-    SCHED_TASK_CLASS(AP_RPM,              &sub.rpm_sensor,   update,              10, 200,  66),
-#endif
     SCHED_TASK(terrain_update,        10,    100,  72),
 #if AP_STATS_ENABLED
     SCHED_TASK(stats_update,           1,    200,  76),
@@ -181,9 +176,9 @@ constexpr int8_t Sub::_failsafe_priorities[5];
 void Sub::run_rate_controller()
 {
     const float last_loop_time_s = AP::scheduler().get_last_loop_time_s();
-    motors.set_dt(last_loop_time_s);
-    attitude_control.set_dt(last_loop_time_s);
-    pos_control.set_dt(last_loop_time_s);
+    motors.set_dt_s(last_loop_time_s);
+    attitude_control.set_dt_s(last_loop_time_s);
+    pos_control.set_dt_s(last_loop_time_s);
 
     //don't run rate controller in manual or motordetection modes
     if (control_mode != Mode::Number::MANUAL && control_mode != Mode::Number::MOTOR_DETECT) {
@@ -206,6 +201,7 @@ void Sub::fifty_hz_loop()
 #if !AP_SUB_RC_ENABLED
     rc().read_input();
 #endif
+    g2.actuators.update_actuators();
 }
 
 // update_batt_compass - read battery and compass
@@ -248,7 +244,7 @@ void Sub::ten_hz_logging_loop()
     if (should_log(MASK_LOG_RCOUT)) {
         logger.Write_RCOUT();
     }
-    if (should_log(MASK_LOG_NTUN) && (sub.flightmode->requires_GPS() || !sub.flightmode->has_manual_throttle())) {
+    if (should_log(MASK_LOG_NTUN) && (sub.flightmode->requires_GPS() || sub.flightmode->requires_altitude())) {
         pos_control.write_log();
     }
     if (should_log(MASK_LOG_IMU) || should_log(MASK_LOG_IMU_FAST) || should_log(MASK_LOG_IMU_RAW)) {
@@ -379,7 +375,6 @@ void Sub::update_altitude()
 
 bool Sub::control_check_barometer()
 {
-#if CONFIG_HAL_BOARD != HAL_BOARD_SITL
     if (!ap.depth_sensor_present) { // can't hold depth without a depth sensor
         gcs().send_text(MAV_SEVERITY_WARNING, "Depth sensor is not connected.");
         return false;
@@ -387,7 +382,6 @@ bool Sub::control_check_barometer()
         gcs().send_text(MAV_SEVERITY_WARNING, "Depth sensor error.");
         return false;
     }
-#endif
     return true;
 }
 
@@ -395,7 +389,7 @@ bool Sub::control_check_barometer()
 bool Sub::get_wp_distance_m(float &distance) const
 {
     // see GCS_MAVLINK_Sub::send_nav_controller_output()
-    distance = sub.wp_nav.get_wp_distance_to_destination() * 0.01;
+    distance = sub.wp_nav.get_wp_distance_to_destination_cm() * 0.01;
     return true;
 }
 
@@ -403,7 +397,7 @@ bool Sub::get_wp_distance_m(float &distance) const
 bool Sub::get_wp_bearing_deg(float &bearing) const
 {
     // see GCS_MAVLINK_Sub::send_nav_controller_output()
-    bearing = sub.wp_nav.get_wp_bearing_to_destination() * 0.01;
+    bearing = sub.wp_nav.get_wp_bearing_to_destination_cd() * 0.01;
     return true;
 }
 
@@ -434,7 +428,7 @@ float Sub::get_alt_rel() const
 
     // get relative position
     float posD;
-    if (ahrs.get_relative_position_D_origin(posD)) {
+    if (ahrs.get_relative_position_D_origin_float(posD)) {
         if (ahrs.home_is_set()) {
             // adjust to the home position
             auto home = ahrs.get_home();
@@ -463,7 +457,7 @@ float Sub::get_alt_msl() const
 
     // get relative position
     float posD;
-    if (!ahrs.get_relative_position_D_origin(posD)) {
+    if (!ahrs.get_relative_position_D_origin_float(posD)) {
         // fall back to the barometer reading
         posD = -AP::baro().get_altitude();
     }

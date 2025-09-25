@@ -569,6 +569,11 @@ function SocketAPM_ud:send(str, len) end
 ---@return integer
 function SocketAPM_ud:sendto(str, len, ipaddr, port) end
 
+-- return true if a socket is in a pending connect state
+-- used for non-blocking TCP connections
+---@return boolean
+function SocketAPM_ud:is_pending() end
+
 -- bind to an address. Use "0.0.0.0" for wildcard bind
 ---@param IP_address string
 ---@param port integer
@@ -1284,9 +1289,21 @@ function AP_HAL__I2CDevice_ud:set_retries(retries) end
 ---@class (exact) AP_Scripting_SerialAccess_ud
 local AP_Scripting_SerialAccess_ud = {}
 
+-- Set UART use unbuffered writes flag, false by default (no effect for device ports)
+---@param on boolean
+function AP_Scripting_SerialAccess_ud:set_unbuffered_writes(on) end
+
 -- Start serial port with the given baud rate (no effect for device ports)
 ---@param baud_rate uint32_t_ud|integer|number
 function AP_Scripting_SerialAccess_ud:begin(baud_rate) end
+
+-- Set UART parity (no effect for device ports)
+---@param parity integer 0=None, 1=Odd, 2=Even
+function AP_Scripting_SerialAccess_ud:configure_parity(parity) end
+
+-- Set UART stop bits (no effect for device ports)
+---@param stop_bits integer 1 or 2
+function AP_Scripting_SerialAccess_ud:set_stop_bits(stop_bits) end
 
 -- Writes a single byte
 ---@param value integer -- byte to write
@@ -2389,7 +2406,7 @@ function esc_telem:get_rpm(instance) end
 
 -- update RPM for an ESC
 ---@param esc_index integer -- esc instance 0 indexed
----@param rpm integer -- RPM
+---@param rpm number -- RPM
 ---@param error_rate number -- error rate
 function esc_telem:update_rpm(esc_index, rpm, error_rate) end
 
@@ -2899,6 +2916,11 @@ gcs = {}
 ---@param value number -- value to send
 function gcs:send_named_float(name, value) end
 
+-- send named string value using NAMED_VALUE_STRING message
+---@param name string -- up to 10 chars long
+---@param value string -- value to send, up to 64 chars long
+function gcs:send_named_string(name, value) end
+
 -- set message interval for a given serial port and message id
 ---@param port_num integer -- serial port number
 ---@param msg_id uint32_t_ud|integer|number -- MAVLink message id
@@ -2984,6 +3006,14 @@ function gcs:send_text(severity, text) end
 -- Return the system time when a gcs with id of MAV_GCS_SYSID was last seen
 ---@return uint32_t_ud -- system time in milliseconds
 function gcs:last_seen() end
+
+-- Return whether the GCS library is currently allowed to set parameters
+---@return boolean
+function gcs:get_allow_param_set() end
+
+-- set whether the GCS library is currently allowed to set parameters
+---@param new_allow_value boolean
+function gcs:set_allow_param_set(new_allow_value) end
 
 -- call a MAVLink MAV_CMD_xxx command via command_int interface
 ---@param command integer -- MAV_CMD_xxx
@@ -3439,6 +3469,10 @@ function gps:primary_sensor() end
 ---@return integer -- number of sensors
 function gps:num_sensors() end
 
+-- Inject a packet of raw binary to a GPS (e.g., RTCM3)
+---@param data string -- binary data to inject
+function gps:inject_data(data) end
+
 -- desc
 ---@class (exact) BattMonitorScript_State_ud
 local BattMonitorScript_State_ud = {}
@@ -3777,15 +3811,30 @@ function ahrs:get_position() end
 
 -- Returns the current vehicle euler yaw angle in radians.
 ---@return number -- yaw angle in radians.
+---@deprecated -- get_yaw_rad
 function ahrs:get_yaw() end
 
 -- Returns the current vehicle euler pitch angle in radians.
 ---@return number -- pitch angle in radians.
+---@deprecated -- get_pitch_rad
 function ahrs:get_pitch() end
 
 -- Returns the current vehicle euler roll angle in radians.
 ---@return number -- roll angle in radians
+---@deprecated -- get_roll_rad
 function ahrs:get_roll() end
+
+-- Returns the current vehicle euler yaw angle in radians.
+---@return number -- yaw angle in radians (0 to 2*Pi).
+function ahrs:get_yaw_rad() end
+
+-- Returns the current vehicle euler pitch angle in radians.
+---@return number -- pitch angle in radians.
+function ahrs:get_pitch_rad() end
+
+-- Returns the current vehicle euler roll angle in radians.
+---@return number -- roll angle in radians
+function ahrs:get_roll_rad() end
 
 -- desc
 AC_AttitudeControl = {}
@@ -3923,7 +3972,7 @@ function mavlink:receive_chan() end
 ---@param chan integer
 ---@param msgid integer
 ---@param message string
----@return boolean -- success
+---@return boolean|nil -- True if send was successful, false if send was not successful, nil if channel does not exist
 function mavlink:send_chan(chan, msgid, message) end
 
 -- Block a given MAV_CMD from being processed by ArduPilot
@@ -3966,6 +4015,13 @@ function fence:get_margin_breaches() end
 ---| 8 # Minimum altitude
 ---@return number -- distance
 function fence:get_breach_distance(fence_type) end
+
+-- Rally library
+rally = {}
+-- Returns a specfic rally by index as a Location 
+---@param index integer -- 0 indexed
+---@return Location_ud|nil
+function rally:get_rally_location(index) end
 
 -- desc
 ---@class (exact) stat_t_ud
@@ -4062,6 +4118,14 @@ function networking:get_netmask_active() end
 -- desc
 ---@return uint32_t_ud
 function networking:get_ip_active() end
+
+-- add a custom ipv4 route
+---@param backend_idx integer -- backend index
+---@param iface_idx integer -- interface index
+---@param dest_ip uint32_t_ud|integer|number -- desttination IP address
+---@param mask_len integer -- network mask bit length
+---@return boolean
+function networking:add_route(backend_idx, iface_idx, dest_ip, mask_len) end
 
 -- visual odometry object
 visual_odom = {}
@@ -4212,3 +4276,38 @@ function crsf:get_menu_event(events) end
 ---@param data string -- binary encoded response payload
 ---@return boolean -- true if the repsonse was successfully sent, false otherwise
 function crsf:send_write_response(data) end
+
+-- handle for DroneCAN message operations
+---@class DroneCAN_Handle_ud
+local DroneCAN_Handle_ud = {}
+
+-- create a DroneCAN_Handle, needed for all other DroneCAN message operations
+---@param driver_index number -- DroneCAN driver index, 0 for first driver
+---@param signature uint64_t_ud -- message signature
+---@param data_type number -- message data type ID
+---@param canfd? boolean -- send as CANFD
+---@return DroneCAN_Handle_ud
+function DroneCAN_Handle(driver_index, signature, data_type, canfd) end
+
+-- subscribe to the current signature and data_type
+---@return boolean
+function DroneCAN_Handle_ud:subscribe() end
+
+-- check if a new message has arrived for a request or subscription
+---@return string payload -- payload of the message
+---@return number nodeid -- node ID the message came from
+---@return uint64_t_ud timestamp -- microseconds since 1/1/1970
+---@return boolean canfd -- true if message was CANFD
+function DroneCAN_Handle_ud:check_message() end
+
+-- make a DroneCAN request
+---@param target_node number -- node to send request to
+---@param payload string -- payload for message
+---@return boolean -- true if send succeeded
+function DroneCAN_Handle_ud:request(target_node, payload) end
+
+-- send a DroneCAN broadcast
+---@param payload string -- payload for message
+---@return boolean -- true if send succeeded
+function DroneCAN_Handle_ud:broadcast(payload) end
+

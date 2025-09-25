@@ -16,6 +16,7 @@ import time
 import vehicle_test_suite
 
 from pysim import util
+from pysim import vehicleinfo
 
 from vehicle_test_suite import AutoTestTimeoutException
 from vehicle_test_suite import NotAchievedException
@@ -174,55 +175,32 @@ class AutoTestRover(vehicle_test_suite.TestSuite):
         self.set_rc(3, 1500)
         self.progress("Circuit complete")
 
-    # def test_throttle_failsafe(self, home, distance_min=10, side=60,
-    #                            timeout=300):
-    #     """Fly east, Failsafe, return, land."""
-    #
-    #     self.mavproxy.send('switch 6\n')  # manual mode
-    #     self.wait_mode('MANUAL')
-    #     self.mavproxy.send("param set FS_ACTION 1\n")
-    #
-    #     # first aim east
-    #     self.progress("turn east")
-    #     if not self.reach_heading_manual(135):
-    #         return False
-    #
-    #     # fly east 60 meters
-    #     self.progress("# Going forward %u meters" % side)
-    #     if not self.reach_distance_manual(side):
-    #         return False
-    #
-    #     # pull throttle low
-    #     self.progress("# Enter Failsafe")
-    #     self.mavproxy.send('rc 3 900\n')
-    #
-    #     tstart = self.get_sim_time()
-    #     success = False
-    #     while self.get_sim_time() < tstart + timeout and not success:
-    #         m = self.mav.recv_match(type='VFR_HUD', blocking=True)
-    #         pos = self.mav.location()
-    #         home_distance = self.get_distance(home, pos)
-    #         self.progress("Alt: %u  HomeDistance: %.0f" %
-    #                       (m.alt, home_distance))
-    #         # check if we've reached home
-    #         if home_distance <= distance_min:
-    #             self.progress("RTL Complete")
-    #             success = True
-    #
-    #     # reduce throttle
-    #     self.mavproxy.send('rc 3 1500\n')
-    #     self.mavproxy.expect('AP: Failsafe ended')
-    #     self.mavproxy.send('switch 2\n')  # manual mode
-    #     self.wait_heartbeat()
-    #     self.wait_mode('MANUAL')
-    #
-    #     if success:
-    #         self.progress("Reached failsafe home OK")
-    #         return True
-    #     else:
-    #         self.progress("Failed to reach Home on failsafe RTL - "
-    #         "timed out after %u seconds" % timeout)
-    #         return False
+    def ThrottleFailsafe(self):
+        """Trigger throttle failsafes"""
+        self.progress("Testing throttle failsafe")
+        # set failsafe to Loiter_or_Hold
+        self.set_parameters({
+            "FS_THR_ENABLE": 1,
+            "FS_ACTION": 6,
+        })
+        self.change_mode("MANUAL")
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+
+        self.progress("Testing failsafe to loiter")
+        self.set_parameter("SIM_RC_FAIL", 1)  # no-pulses failsafe
+        self.wait_mode("LOITER", timeout=10)
+
+        # restore RC and prepare to test hold fallback
+        self.set_parameter("SIM_RC_FAIL", 0)
+        self.set_parameter("SIM_GPS1_ENABLE", 0)
+        self.change_mode("MANUAL")
+
+        self.progress("Testing failsafe to hold")
+        self.set_parameter("SIM_RC_FAIL", 1)
+        self.wait_mode("HOLD", timeout=10)
+        self.disarm_vehicle()
+        self.progress("Loiter or Hold as throttle failsafe OK")
 
     def Sprayer(self):
         """Test sprayer functionality."""
@@ -340,14 +318,14 @@ class AutoTestRover(vehicle_test_suite.TestSuite):
     #################################################
     # AUTOTEST ALL
     #################################################
-    def drive_mission(self, filename, strict=True):
+    def drive_mission(self, filename, strict=True, ignore_MANUAL_mode_change=False):
         """Drive a mission from a file."""
         self.progress("Driving mission %s" % filename)
         wp_count = self.load_mission(filename, strict=strict)
         self.wait_ready_to_arm()
         self.arm_vehicle()
         self.change_mode('AUTO')
-        self.wait_waypoint(1, wp_count-1, max_dist=5)
+        self.wait_waypoint(1, wp_count-1, max_dist=5, ignore_MANUAL_mode_change=ignore_MANUAL_mode_change)
         self.wait_statustext("Mission Complete", timeout=600)
         self.disarm_vehicle()
         self.progress("Mission OK")
@@ -3594,17 +3572,17 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
 
     def GCSMission(self):
         '''check MAVProxy's waypoint handling of missions'''
-
+        # vehicle with state may have non-zero MISSION_CURRENT.seq, so reboot
+        self.reboot_sitl()
         target_system = 1
         target_component = 1
         mavproxy = self.start_mavproxy()
+        self.wait_parameter_value('MIS_TOTAL', 1)
         mavproxy.send('wp clear\n')
-        self.delay_sim_time(1)
-        if self.get_parameter("MIS_TOTAL") != 0:
-            raise NotAchievedException("Failed to clear mission")
-        m = self.assert_receive_message('MISSION_CURRENT', timeout=5, verbose=True)
-        if m.seq != 0:
-            raise NotAchievedException("Bad mission current")
+        self.wait_parameter_value('MIS_TOTAL', 0)
+        self.assert_received_message_field_values('MISSION_CURRENT', {
+            "seq": 0,
+        }, timeout=5, verbose=True)
         self.load_mission_using_mavproxy(mavproxy, "rover-gripper-mission.txt")
         set_wp = 1
         mavproxy.send('wp set %u\n' % set_wp)
@@ -3725,6 +3703,9 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         downloaded_items = self.download_using_mission_protocol(mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
         self.check_mission_waypoint_items_same(items_with_split_in,
                                                downloaded_items)
+
+        mavproxy.send('wp clear\n')
+        self.wait_parameter_value('MIS_TOTAL', 0)
 
         self.stop_mavproxy(mavproxy)
 
@@ -6200,7 +6181,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
 
         # ensure setting the private channel mask doesn't cause us to
         # execute these commands:
-        self.set_parameter("SERIAL2_OPTIONS", 1024)
+        self.set_parameter("MAV3_OPTIONS", 2)
         self.reboot_sitl()  # mavlink-private is reboot-required
         mav2 = mavutil.mavlink_connection("tcp:localhost:5763",
                                           robust_parsing=True,
@@ -6884,6 +6865,30 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.context_pop()
         self.reboot_sitl()
 
+    def SafetySwitch(self):
+        '''check safety switch works'''
+        self.start_subtest("Make sure we don't start moving when safety switch enabled")
+        self.wait_ready_to_arm()
+        self.set_rc(1, 2000)
+        self.wait_armed()
+        self.set_rc(1, 1500)
+        self.set_safetyswitch_on()
+        self.wait_groundspeed(0, 0.1, minimum_duration=2)
+        self.set_safetyswitch_off()
+        self.disarm_vehicle()
+
+        self.start_subtest("Make sure we stop moving when safety switch enabled")
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.set_rc(3, 1700)
+        self.wait_groundspeed(5, 100, minimum_duration=2)
+        self.set_safetyswitch_on()
+        self.wait_groundspeed(0, 0.1, minimum_duration=2)
+        self.set_safetyswitch_off()
+        self.wait_groundspeed(5, 100, minimum_duration=2)
+        self.set_rc(3, 1500)
+        self.disarm_vehicle()
+
     def GetMessageInterval(self):
         '''check that the two methods for requesting a MESSAGE_INTERVAL message are equivalent'''
         target_msg = mavutil.mavlink.MAVLINK_MSG_ID_HOME_POSITION
@@ -6909,6 +6914,48 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
 
                 if m.interval_us != interval_us:
                     raise NotAchievedException(f"Unexpected interval_us (want={interval_us}, got={m.interval_us})")
+
+    def DriveEachFrame(self):
+        '''drive each frame (except BalanceBot) in a mission to ensure basic functionality'''
+        vinfo = vehicleinfo.VehicleInfo()
+        vinfo_options = vinfo.options[self.vehicleinfo_key()]
+        known_broken_frames = {
+            "balancebot": "needs special stay-upright code",
+            "motorboat-skid": "gets stuck between waypoints 2 and 3",
+        }
+        for frame in sorted(vinfo_options["frames"].keys()):
+            self.start_subtest("Testing frame (%s)" % str(frame))
+            if frame in known_broken_frames:
+                self.progress("Actually, no I'm not - it is known-broken (%s)" %
+                              (known_broken_frames[frame]))
+                continue
+            frame_bits = vinfo_options["frames"][frame]
+            print("frame_bits: %s" % str(frame_bits))
+            if frame_bits.get("external", False):
+                self.progress("Actually, no I'm not - it is an external simulation")
+                continue
+            model = frame_bits.get("model", frame)
+            defaults = self.model_defaults_filepath(frame)
+            if not isinstance(defaults, list):
+                defaults = [defaults]
+            self.customise_SITL_commandline(
+                [],
+                defaults_filepath=defaults,
+                model=model,
+                wipe=True,
+            )
+            mission_file = "basic.txt"
+            self.wait_ready_to_arm()
+            self.set_parameters({
+                "MIS_DONE_BEHAVE": 3,
+                "SIM_WIND_SPD": 10,
+            })
+            self.arm_vehicle()
+            self.drive_mission(mission_file, strict=False, ignore_MANUAL_mode_change=True)
+            self.wait_mode('MANUAL')
+
+            if self.distance_to_home() > 2:
+                raise NotAchievedException("Did not get home!")
 
     def tests(self):
         '''return list of all tests'''
@@ -7011,6 +7058,9 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
             self.BatteryInvalid,
             self.REQUIRE_LOCATION_FOR_ARMING,
             self.GetMessageInterval,
+            self.SafetySwitch,
+            self.ThrottleFailsafe,
+            self.DriveEachFrame,
         ])
         return ret
 

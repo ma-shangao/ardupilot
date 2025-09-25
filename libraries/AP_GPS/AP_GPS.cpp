@@ -42,7 +42,7 @@
 #include "AP_GPS_MSP.h"
 #include "AP_GPS_ExternalAHRS.h"
 #include "GPS_Backend.h"
-#if HAL_SIM_GPS_ENABLED
+#if AP_SIM_GPS_ENABLED
 #include "AP_GPS_SITL.h"
 #endif
 
@@ -239,7 +239,7 @@ const AP_Param::GroupInfo AP_GPS::var_info[] = {
     // @Param: _DRV_OPTIONS
     // @DisplayName: driver options
     // @Description: Additional backend specific options
-    // @Bitmask: 0:Use UART2 for moving baseline on ublox,1:Use base station for GPS yaw on SBF,2:Use baudrate 115200,3:Use dedicated CAN port b/w GPSes for moving baseline,4:Use ellipsoid height instead of AMSL, 5:Override GPS satellite health of L5 band from L1 health, 6:Enable RTCM full parse even for a single channel, 7:Disable automatic full RTCM parsing when RTCM seen on more than one channel
+    // @Bitmask: 0:Use UART2 for moving baseline on ublox,1:Use base station for GPS yaw on SBF,2:Use baudrate 115200 on ublox,3:Use dedicated CAN port b/w GPSes for moving baseline,4:Use ellipsoid height instead of AMSL, 5:Override GPS satellite health of L5 band from L1 health, 6:Enable RTCM full parse even for a single channel, 7:Disable automatic full RTCM parsing when RTCM seen on more than one channel
     // @User: Advanced
     AP_GROUPINFO("_DRV_OPTIONS", 22, AP_GPS, _driver_options, 0),
 
@@ -561,9 +561,9 @@ void AP_GPS::send_blob_start(uint8_t instance)
 #if AP_GPS_NOVA_ENABLED
     case GPS_TYPE_NOVA:
 #endif //AP_GPS_NOVA_ENABLED
-#if HAL_SIM_GPS_ENABLED
+#if AP_SIM_GPS_ENABLED
     case GPS_TYPE_SITL:
-#endif  // HAL_SIM_GPS_ENABLED
+#endif  // AP_SIM_GPS_ENABLED
         // none of these GPSs have initialisation blobs
         break;
     default:
@@ -662,7 +662,7 @@ AP_GPS_Backend *AP_GPS::_detect_instance(const uint8_t instance)
         dstate->auto_detected_baud = false; // specified, not detected
         return NEW_NOTHROW AP_GPS_MSP(*this, params[instance], state[instance], nullptr);
 #endif
-#if HAL_EXTERNAL_AHRS_ENABLED
+#if AP_EXTERNAL_AHRS_ENABLED
     case GPS_TYPE_EXTERNAL_AHRS:
         if (AP::externalAHRS().get_port(AP_ExternalAHRS::AvailableSensor::GPS) >= 0) {
             dstate->auto_detected_baud = false; // specified, not detected
@@ -734,10 +734,10 @@ AP_GPS_Backend *AP_GPS::_detect_instance(const uint8_t instance)
         return NEW_NOTHROW AP_GPS_NOVA(*this, params[instance], state[instance], port);
 #endif //AP_GPS_NOVA_ENABLED
 
-#if HAL_SIM_GPS_ENABLED
+#if AP_SIM_GPS_ENABLED
     case GPS_TYPE_SITL:
         return NEW_NOTHROW AP_GPS_SITL(*this, params[instance], state[instance], port);
-#endif  // HAL_SIM_GPS_ENABLED
+#endif  // AP_SIM_GPS_ENABLED
 
     default:
         break;
@@ -1283,7 +1283,7 @@ void AP_GPS::handle_msp(const MSP::msp_gps_data_message_t &pkt)
 }
 #endif // HAL_MSP_GPS_ENABLED
 
-#if HAL_EXTERNAL_AHRS_ENABLED
+#if AP_EXTERNAL_AHRS_ENABLED
 
 bool AP_GPS::get_first_external_instance(uint8_t& instance) const
 {
@@ -1302,7 +1302,7 @@ void AP_GPS::handle_external(const AP_ExternalAHRS::gps_data_message_t &pkt, con
         drivers[instance]->handle_external(pkt);
     }
 }
-#endif // HAL_EXTERNAL_AHRS_ENABLED
+#endif // AP_EXTERNAL_AHRS_ENABLED
 
 /**
    Lock a GPS port, preventing the GPS driver from using it. This can
@@ -1642,6 +1642,13 @@ bool AP_GPS::parse_rtcm_injection(mavlink_channel_t chan, const mavlink_gps_rtcm
             const uint32_t crc = crc_crc32(0, buf, len);
 
 #if HAL_LOGGING_ENABLED
+// @LoggerMessage: RTCM
+// @Description: GPS atmospheric perturbation data
+// @Field: TimeUS: Time since system startup
+// @Field: Chan: mavlink channel number this data was received on
+// @Field: RTCMId: ID field from RTCM packet
+// @Field: Len: RTCM packet length
+// @Field: CRC: calculated crc32 for the packet
             AP::logger().WriteStreaming("RTCM", "TimeUS,Chan,RTCMId,Len,CRC", "s#---", "F----", "QBHHI",
                                         AP_HAL::micros64(),
                                         uint8_t(chan),

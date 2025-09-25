@@ -364,7 +364,7 @@ void AP_Terrain::update(void)
     // just schedule any needed disk IO
     schedule_disk_io();
 
-    const AP_AHRS &ahrs = AP::ahrs();
+    AP_AHRS &ahrs = AP::ahrs();
 
     // try to ensure the home location is populated
     float height;
@@ -377,6 +377,9 @@ void AP_Terrain::update(void)
     if (pos_valid && terrain_valid) {
         last_current_loc_height = height;
         have_current_loc_height = true;
+
+        // send terrain altitude to AHRS for optical flow when rangefinder is out of range
+        ahrs.writeTerrainAMSL(height);
     }
 
     // check for pending mission data
@@ -439,6 +442,10 @@ bool AP_Terrain::pre_arm_checks(char *failure_msg, uint8_t failure_msg_len) cons
         next_mission_index != 0 ||
         next_rally_index != 0) {
         hal.util->snprintf(failure_msg, failure_msg_len, "waiting for terrain data");
+        return false;
+    }
+    if (grid_spacing <= 0) {
+        hal.util->snprintf(failure_msg, failure_msg_len, "TERRAIN_SPACING can't be <= 0");
         return false;
     }
 

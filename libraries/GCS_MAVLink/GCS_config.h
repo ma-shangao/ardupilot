@@ -5,6 +5,7 @@
 #include <AP_Mission/AP_Mission_config.h>
 #include <AP_InertialSensor/AP_InertialSensor_config.h>
 #include <AP_Arming/AP_Arming_config.h>
+#include <AP_RangeFinder/AP_RangeFinder_config.h>
 
 #ifndef HAL_GCS_ENABLED
 #define HAL_GCS_ENABLED 1
@@ -13,6 +14,10 @@
 #ifndef HAL_MAVLINK_BINDINGS_ENABLED
 #define HAL_MAVLINK_BINDINGS_ENABLED HAL_GCS_ENABLED
 #endif
+
+#ifndef AP_MAVLINK_SIGNING_ENABLED
+#define AP_MAVLINK_SIGNING_ENABLED HAL_GCS_ENABLED
+#endif  // AP_MAVLINK_SIGNING_ENABLED
 
 #ifndef HAL_HIGH_LATENCY2_ENABLED
 #define HAL_HIGH_LATENCY2_ENABLED 1
@@ -49,6 +54,10 @@
 
 #ifndef AP_MAVLINK_MSG_RELAY_STATUS_ENABLED
 #define AP_MAVLINK_MSG_RELAY_STATUS_ENABLED HAL_GCS_ENABLED && AP_RELAY_ENABLED
+#endif
+
+#ifndef AP_MAVLINK_MSG_WIND_ENABLED
+#define AP_MAVLINK_MSG_WIND_ENABLED AP_AHRS_ENABLED
 #endif
 
 // allow removal of developer-centric mavlink commands
@@ -98,6 +107,12 @@
 #define AP_MAVLINK_MSG_MISSION_REQUEST_ENABLED AP_MISSION_ENABLED
 #endif
 
+// RANGEFINDER is a subset of the DISTANCE_SENSOR message which we
+// also send.  Rover's send-minimum can be done on the client-side.
+#ifndef AP_MAVLINK_MSG_RANGEFINDER_SENDING_ENABLED
+#define AP_MAVLINK_MSG_RANGEFINDER_SENDING_ENABLED AP_RANGEFINDER_ENABLED
+#endif
+
 // all commands can be executed by COMMAND_INT, so COMMAND_LONG isn't
 // strictly required.  This option created for 4.5, Nov 2023, and code
 // left in place.
@@ -119,4 +134,13 @@
 
 #ifndef AP_MAVLINK_MSG_FLIGHT_INFORMATION_ENABLED
 #define AP_MAVLINK_MSG_FLIGHT_INFORMATION_ENABLED HAL_GCS_ENABLED && AP_ARMING_ENABLED
-#endif
+#endif  // AP_MAVLINK_MSG_FLIGHT_INFORMATION_ENABLED
+
+// deprecated 2025-02, replaced by MAV_CMD_DO_SET_GLOBAL_ORIGIN
+// ArduPilot 4.8 starts to warn if anyone uses this
+// ArduPilot 4.9 continues to warn if anyone uses this
+// ArduPilot 4.10 compiles support out
+// ArduPilot 4.11 removes the code
+#ifndef AP_MAVLINK_SET_GPS_GLOBAL_ORIGIN_MESSAGE_ENABLED
+#define AP_MAVLINK_SET_GPS_GLOBAL_ORIGIN_MESSAGE_ENABLED (HAL_GCS_ENABLED && AP_AHRS_ENABLED)
+#endif  // AP_MAVLINK_SET_GPS_GLOBAL_ORIGIN_MESSAGE_ENABLED

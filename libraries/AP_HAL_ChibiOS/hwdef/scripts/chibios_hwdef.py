@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 setup board.h for chibios
 
@@ -684,6 +684,12 @@ class ChibiOSHWDef(hwdef.HWDef):
             line = "0"
         return line
 
+    def disable_can(self, f):
+        '''setup for a non-CAN enabled board'''
+        f.write("#define HAL_NUM_CAN_IFACES 0\n")
+        f.write("#undef HAL_ENABLE_DRONECAN_DRIVERS\n")
+        f.write("#define HAL_ENABLE_DRONECAN_DRIVERS 0\n")
+
     def enable_can(self, f):
         '''setup for a CAN enabled board'''
         if self.mcu_series.startswith("STM32H7") or self.mcu_series.startswith("STM32G4"):
@@ -949,7 +955,6 @@ class ChibiOSHWDef(hwdef.HWDef):
 #define STM32_ETH_BUFFERS_EXTERN
 
 ''')
-
         defines = self.get_mcu_config('DEFINES', False)
         if defines is not None:
             for d in defines.keys():
@@ -1011,6 +1016,8 @@ class ChibiOSHWDef(hwdef.HWDef):
 
         if self.have_type_prefix('CAN') and not using_chibios_can:
             self.enable_can(f)
+        else:
+            self.disable_can(f)
         flash_size = self.get_config('FLASH_SIZE_KB', type=int)
         f.write('#define BOARD_FLASH_SIZE %u\n' % flash_size)
         self.env_vars['BOARD_FLASH_SIZE'] = flash_size
@@ -1057,6 +1064,8 @@ class ChibiOSHWDef(hwdef.HWDef):
                 # storage at end of flash - leave room
                 if offset > bl_offset:
                     flash_reserve_end = flash_size - offset
+            if self.is_bootloader_fw():
+                f.write('#define STORAGE_FLASH_START_PAGE %u\n' % storage_flash_page)
 
         crashdump_enabled = bool(self.intdefines.get('AP_CRASHDUMP_ENABLED', (flash_size >= 2048 and not self.is_bootloader_fw())))  # noqa
         # lets pick a flash sector for Crash log
@@ -1180,9 +1189,7 @@ class ChibiOSHWDef(hwdef.HWDef):
             f.write('''
 #define HAL_BOOTLOADER_BUILD TRUE
 #define HAL_USE_ADC FALSE
-#define HAL_USE_EXT FALSE
 #define HAL_NO_PRINTF
-#define HAL_NO_CCM
 #define HAL_USE_I2C FALSE
 #define HAL_USE_PWM FALSE
 #define CH_DBG_ENABLE_STACK_CHECK FALSE
@@ -1220,11 +1227,13 @@ class ChibiOSHWDef(hwdef.HWDef):
 #define HAL_STORAGE_SIZE 16384
 #endif
 #define HAL_USE_RTC FALSE
-#define DISABLE_SERIAL_ESC_COMM TRUE
 #ifndef CH_CFG_USE_DYNAMIC
 #define CH_CFG_USE_DYNAMIC FALSE
 #endif
 #define STM32_FLASH_DISABLE_ISR 0
+#ifndef PAL_USE_CALLBACKS
+#define PAL_USE_CALLBACKS FALSE
+#endif
 ''')
             # get bootloader flash space, if larger than 128k we can enable Heap
             flash_size = self.get_config('FLASH_USE_MAX_KB', type=int, default=0)
@@ -1474,7 +1483,7 @@ INCLUDE common.ld
                 % (devidx, name, self.spi_list.index(bus), int(devid[5:]), pal_line,
                    mode, lowspeed, highspeed))
             devlist.append('HAL_SPI_DEVICE%u' % devidx)
-        f.write('#define HAL_SPI_DEVICE_LIST %s\n\n' % ','.join(devlist))
+        self.write_device_table(f, 'spi devices', 'HAL_SPI_DEVICE_LIST', devlist)
         for dev in self.spidev:
             f.write("#define HAL_WITH_SPI_%s 1\n" % dev[0].upper().replace("-", "_"))
         f.write("\n")
@@ -1527,7 +1536,7 @@ INCLUDE common.ld
                 '#define HAL_WSPI_DEVICE%-2u WSPIDesc(%-17s, %2u, WSPIDEV_%s, %7s, %2u, %2u)\n'
                 % (devidx, name, self.wspi_list.index(bus), mode, speed, int(size_pow2), int(ncs_clk_delay)))
             devlist.append('HAL_WSPI_DEVICE%u' % devidx)
-        f.write('#define HAL_WSPI_DEVICE_LIST %s\n\n' % ','.join(devlist))
+        self.write_device_table(f, "wspi devices", "HAL_WSPI_DEVICE_LIST", devlist)
         for dev in self.wspidev:
             f.write("#define HAL_HAS_WSPI_%s 1\n" % dev[0].upper().replace("-", "_"))
             if dev[1].startswith('QUADSPI'):
@@ -1867,7 +1876,7 @@ INCLUDE common.ld
 #endif
 ''' % (OTG2_index, OTG2_index))
 
-        f.write('#define HAL_SERIAL_DEVICE_LIST %s\n\n' % ','.join(devlist))
+        self.write_device_table(f, "serial devices", "HAL_SERIAL_DEVICE_LIST", devlist)
         if not need_uart_driver and not self.is_bootloader_fw():
             f.write('''
 #ifndef HAL_USE_SERIAL
@@ -1943,7 +1952,8 @@ INCLUDE common.ld
 #endif
 '''
                     % (n, n, n, n, n, n, n, scl_line, sda_line, n, n, n, scl_line, sda_line))
-        f.write('\n#define HAL_I2C_DEVICE_LIST %s\n\n' % ','.join(devlist))
+        f.write('\n')
+        self.write_device_table(f, "i2c devices", "HAL_I2C_DEVICE_LIST", devlist)
 
     def parse_timer(self, str):
         '''parse timer channel string, i.e TIM8_CH2N'''
@@ -2950,29 +2960,6 @@ Please run: Tools/scripts/build_bootloaders.py %s
 
         super(ChibiOSHWDef, self).process_line_env(line, depth, a)
 
-    def process_file(self, filename, depth=0):
-        '''process a hwdef.dat file'''
-        try:
-            f = open(filename, "r")
-        except Exception:
-            self.error("Unable to open file %s" % filename)
-        for line in f.readlines():
-            line = line.split('#')[0] # ensure we discard the comments
-            line = line.strip()
-            if len(line) == 0 or line[0] == '#':
-                continue
-            a = shlex.split(line)
-            if a[0] == "include" and len(a) > 1:
-                include_file = a[1]
-                if include_file[0] != '/':
-                    dir = os.path.dirname(filename)
-                    include_file = os.path.normpath(
-                        os.path.join(dir, include_file))
-                self.progress("Including %s" % include_file)
-                self.process_file(include_file, depth+1)
-            else:
-                self.process_line(line, depth)
-
     def add_apperiph_defaults(self, f):
         '''add default defines for peripherals'''
         if not self.is_periph_fw():
@@ -3098,6 +3085,17 @@ Please run: Tools/scripts/build_bootloaders.py %s
         self.romfs_add('defaults.parm', filepath)
         self.have_defaults_file = True
 
+    def get_stale_defines(self):
+        '''returns a map with a stale define and a comment as to what to do about it'''
+        ret = super().get_stale_defines()
+        ret.update({
+            'HAL_NO_RCIN_THREAD': 'HAL_NO_RCIN_THREAD is no longer used; try "define HAL_RCIN_THREAD_ENABLED 0"',
+            'HAL_NO_MONITOR_THREAD': 'HAL_NO_MONITOR_THREAD is no longer used; try "define HAL_MONITOR_THREAD_ENABLED 0"',
+            'HAL_NO_GPIO_IRQ': 'HAL_NO_GPIO_IRQ is no longer used; remove it from your hwdef',
+            'DISABLE_SERIAL_ESC_COMM': 'DISABLE_SERIAL_ESC_COMM is no longer used; try "define HAL_SERIAL_ESC_COMM_ENABLED 1"',
+        })
+        return ret
+
     def run(self):
         # process input file
         self.process_hwdefs()
@@ -3107,6 +3105,12 @@ Please run: Tools/scripts/build_bootloaders.py %s
 
         self.mcu_type = self.get_config('MCU', 1)
         self.progress("Setup for MCU %s" % self.mcu_type)
+
+        # put USE_BOOTLOADER_FROM_BOARD into the environment so the
+        # build process can use it when generating hex files:
+        use_bootloader_from_board = self.get_config('USE_BOOTLOADER_FROM_BOARD', default=None, required=False)
+        if use_bootloader_from_board is not None:
+            self.env_vars['USE_BOOTLOADER_FROM_BOARD'] = use_bootloader_from_board
 
         # build a list for peripherals for DMA resolver
         self.periph_list = self.build_peripheral_list()
